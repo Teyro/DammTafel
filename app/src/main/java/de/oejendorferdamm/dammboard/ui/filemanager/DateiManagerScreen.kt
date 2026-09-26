@@ -47,7 +47,10 @@ import de.oejendorferdamm.dammboard.model.IServEintrag
 import de.oejendorferdamm.dammboard.model.IServZugang
 import de.oejendorferdamm.dammboard.ui.icons.AllgemeinSymbol
 import de.oejendorferdamm.dammboard.ui.icons.AllgemeinesSymbol
+import de.oejendorferdamm.dammboard.ui.icons.symbolRaster
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 
 private val Hintergrundfarbe = Color(0xFFF2F1ED)
@@ -90,7 +93,9 @@ fun DateiManagerScreen(zugang: IServZugang, bild: Bitmap?, onFertig: () -> Unit)
         fehler = null
         erfolg = null
         scope.launch {
-            val bytes = bitmapZuPng(quelle)
+            // PNG-Kodierung eines ganzen Tafelbilds dauert auf alten Geräten (und bei
+            // 4K-Auflösung) spürbar – nicht auf dem UI-Thread, sonst friert die Oberfläche ein.
+            val bytes = withContext(Dispatchers.Default) { bitmapZuPng(quelle) }
             val dateiname = "DammBoard_${System.currentTimeMillis()}.png"
             val ergebnis = client.hochladen(zielPfad, dateiname, bytes)
             hochladend = false
@@ -209,8 +214,7 @@ private fun OrdnerZeile(eintrag: IServEintrag, onClick: () -> Unit) {
 
 @Composable
 private fun OrdnerSymbol(modifier: Modifier = Modifier) {
-    Canvas(modifier = modifier) {
-        val w = size.width; val h = size.height
+    Canvas(modifier = modifier) { symbolRaster { w, h ->
         drawRoundRect(
             color = Akzent,
             topLeft = Offset(w * 0.06f, h * 0.28f),
@@ -238,7 +242,7 @@ private fun OrdnerSymbol(modifier: Modifier = Modifier) {
             start = Offset(w * 0.78f, h * 0.16f), end = Offset(w * 0.86f, h * 0.28f),
             strokeWidth = 2f
         )
-    }
+    } }
 }
 
 private fun bitmapZuPng(bitmap: Bitmap): ByteArray {

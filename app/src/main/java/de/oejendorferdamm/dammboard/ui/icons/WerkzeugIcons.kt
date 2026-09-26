@@ -11,6 +11,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.scale
 import de.oejendorferdamm.dammboard.model.FormTyp
 import de.oejendorferdamm.dammboard.model.GeometrieWerkzeug
 import de.oejendorferdamm.dammboard.model.RadiererGroesse
@@ -19,6 +20,26 @@ import kotlin.math.cos
 import kotlin.math.sin
 
 private val gestricheltEffekt = PathEffect.dashPathEffect(floatArrayOf(8f, 7f), 0f)
+
+/**
+ * Kantenlänge des virtuellen Rasters, in dem alle Symbole gezeichnet werden. Alle festen Zahlen
+ * darin (Linienstärken, Punkt-Radien, Strichelung) beziehen sich auf dieses Raster und wachsen
+ * mit der tatsächlichen Symbolgröße mit. Bis 0.4.6 waren das echte Bildschirmpixel: auf Boards
+ * mit hoher Pixeldichte wurden die Linien dadurch hauchdünn und blieben es auch bei
+ * "Symbolgröße: Groß". 20 entspricht dem bisherigen Aussehen auf einem Full-HD-Board.
+ */
+private const val SYMBOL_RASTER = 20f
+
+/** Zeichnet [zeichnen] im virtuellen Symbolraster (w/h = Rastermaße) und skaliert es auf die echte Größe. */
+internal fun DrawScope.symbolRaster(zeichnen: DrawScope.(w: Float, h: Float) -> Unit) {
+    val faktor = size.minDimension / SYMBOL_RASTER
+    if (faktor <= 0f) return
+    val w = size.width / faktor
+    val h = size.height / faktor
+    scale(scale = faktor, pivot = Offset.Zero) {
+        this.zeichnen(w, h)
+    }
+}
 
 private fun DrawScope.linie(a: Offset, b: Offset, tint: Color, breite: Float = 2.4f, gestrichelt: Boolean = false) {
     drawLine(
@@ -29,9 +50,7 @@ private fun DrawScope.linie(a: Offset, b: Offset, tint: Color, breite: Float = 2
 
 @Composable
 fun WerkzeugSymbol(werkzeug: Werkzeug, modifier: Modifier = Modifier, tint: Color = Color.Black) {
-    Canvas(modifier = modifier) {
-        val w = size.width
-        val h = size.height
+    Canvas(modifier = modifier) { symbolRaster { w, h ->
         val stroke = Stroke(width = 2.2f, cap = StrokeCap.Round, join = StrokeJoin.Round)
         when (werkzeug) {
             Werkzeug.STIFT -> {
@@ -60,7 +79,7 @@ fun WerkzeugSymbol(werkzeug: Werkzeug, modifier: Modifier = Modifier, tint: Colo
                 drawCircle(
                     color = tint,
                     radius = w * 0.32f,
-                    center = center,
+                    center = Offset(w / 2, h / 2),
                     style = Stroke(width = 2.2f, pathEffect = gestricheltEffekt)
                 )
                 drawCircle(tint, radius = 2.6f, center = Offset(w * 0.68f, h * 0.66f))
@@ -97,7 +116,7 @@ fun WerkzeugSymbol(werkzeug: Werkzeug, modifier: Modifier = Modifier, tint: Colo
                 linie(Offset(w * 0.14f, h * 0.56f), Offset(w * 0.86f, h * 0.56f), tint, 2f)
             }
         }
-    }
+    } }
 }
 
 private fun DrawScope.drawRoundedShape(tint: Color, w: Float, h: Float) {
@@ -128,8 +147,7 @@ private fun DrawScope.geometrieSymbolLineal(tint: Color, w: Float, h: Float) {
 
 @Composable
 fun StiftArtSymbol(fein: Boolean, modifier: Modifier = Modifier, tint: Color = Color.Black) {
-    Canvas(modifier = modifier) {
-        val w = size.width; val h = size.height
+    Canvas(modifier = modifier) { symbolRaster { w, h ->
         if (fein) {
             linie(Offset(w * 0.2f, h * 0.85f), Offset(w * 0.78f, h * 0.18f), tint, 2.6f)
             drawCircle(tint, radius = 2.2f, center = Offset(w * 0.82f, h * 0.14f))
@@ -141,13 +159,12 @@ fun StiftArtSymbol(fein: Boolean, modifier: Modifier = Modifier, tint: Color = C
                 size = androidx.compose.ui.geometry.Size(w * 0.2f, h * 0.16f)
             )
         }
-    }
+    } }
 }
 
 @Composable
 fun FormSymbol(typ: FormTyp, modifier: Modifier = Modifier, tint: Color = Color.Black) {
-    Canvas(modifier = modifier) {
-        val w = size.width; val h = size.height
+    Canvas(modifier = modifier) { symbolRaster { w, h ->
         val stroke = Stroke(width = 2f, cap = StrokeCap.Round, join = StrokeJoin.Round)
         val gestrichelt = typ in listOf(
             FormTyp.LINIE_GESTRICHELT, FormTyp.PFEIL_GESTRICHELT,
@@ -157,7 +174,7 @@ fun FormSymbol(typ: FormTyp, modifier: Modifier = Modifier, tint: Color = Color.
         when (typ) {
             FormTyp.DREIECK_RECHTS -> drawPath(dreieckPfad(w, h, rechts = true), tint, style = stroke)
             FormTyp.DREIECK -> drawPath(dreieckPfad(w, h, rechts = false), tint, style = stroke)
-            FormTyp.KREIS -> drawCircle(tint, radius = w * 0.36f, center = center, style = stroke)
+            FormTyp.KREIS -> drawCircle(tint, radius = w * 0.36f, center = Offset(w / 2, h / 2), style = stroke)
             FormTyp.ELLIPSE -> drawOval(
                 tint,
                 topLeft = Offset(w * 0.12f, h * 0.28f),
@@ -192,7 +209,7 @@ fun FormSymbol(typ: FormTyp, modifier: Modifier = Modifier, tint: Color = Color.
                 pfeilSpitze(Offset(w * 0.82f, h * 0.24f), Offset(w * 0.6f, h * 0.16f), tint)
             }
         }
-    }
+    } }
 }
 
 private fun pfeilSpitzeWinkel(spitze: Offset, richtung: Offset, tint: Color, scope: DrawScope) = with(scope) {
@@ -259,8 +276,7 @@ private fun wellenPfad(w: Float, h: Float) = androidx.compose.ui.graphics.Path()
 
 @Composable
 fun RadiererSymbol(groesse: RadiererGroesse, modifier: Modifier = Modifier, tint: Color = Color.Black) {
-    Canvas(modifier = modifier) {
-        val w = size.width; val h = size.height
+    Canvas(modifier = modifier) { symbolRaster { w, h ->
         val faktor = when (groesse) {
             RadiererGroesse.KLEIN -> 0.4f
             RadiererGroesse.MITTEL -> 0.6f
@@ -273,13 +289,12 @@ fun RadiererSymbol(groesse: RadiererGroesse, modifier: Modifier = Modifier, tint
             cornerRadius = androidx.compose.ui.geometry.CornerRadius(w * 0.08f),
             style = Stroke(width = 2f)
         )
-    }
+    } }
 }
 
 @Composable
 fun AllesLoeschenSymbol(modifier: Modifier = Modifier, tint: Color = Color.Black) {
-    Canvas(modifier = modifier) {
-        val w = size.width; val h = size.height
+    Canvas(modifier = modifier) { symbolRaster { w, h ->
         drawRoundRect(
             color = tint,
             topLeft = Offset(w * 0.14f, h * 0.22f),
@@ -289,13 +304,12 @@ fun AllesLoeschenSymbol(modifier: Modifier = Modifier, tint: Color = Color.Black
         )
         linie(Offset(w * 0.3f, h * 0.4f), Offset(w * 0.7f, h * 0.6f), tint, 2f)
         linie(Offset(w * 0.7f, h * 0.4f), Offset(w * 0.3f, h * 0.6f), tint, 2f)
-    }
+    } }
 }
 
 @Composable
 fun GeometrieSymbol(werkzeug: GeometrieWerkzeug, modifier: Modifier = Modifier, tint: Color = Color.Black) {
-    Canvas(modifier = modifier) {
-        val w = size.width; val h = size.height
+    Canvas(modifier = modifier) { symbolRaster { w, h ->
         val stroke = Stroke(width = 2f, cap = StrokeCap.Round, join = StrokeJoin.Round)
         when (werkzeug) {
             GeometrieWerkzeug.LINEAL -> geometrieSymbolLineal(tint, w, h)
@@ -346,7 +360,7 @@ fun GeometrieSymbol(werkzeug: GeometrieWerkzeug, modifier: Modifier = Modifier, 
                 drawPath(pfad, tint, style = stroke)
             }
         }
-    }
+    } }
 }
 
 private fun DrawScope.arcBogen(zentrum: Offset, radius: Float, tint: Color) {
@@ -360,8 +374,7 @@ private fun DrawScope.arcBogen(zentrum: Offset, radius: Float, tint: Color) {
 
 @Composable
 fun LinienStilSymbol(gestrichelt: Boolean, modifier: Modifier = Modifier, tint: Color = Color.Black) {
-    Canvas(modifier = modifier) {
-        val w = size.width; val h = size.height
+    Canvas(modifier = modifier) { symbolRaster { w, h ->
         drawLine(
             color = tint,
             start = Offset(w * 0.15f, h * 0.5f),
@@ -370,7 +383,7 @@ fun LinienStilSymbol(gestrichelt: Boolean, modifier: Modifier = Modifier, tint: 
             cap = StrokeCap.Round,
             pathEffect = if (gestrichelt) gestricheltEffekt else null
         )
-    }
+    } }
 }
 
 enum class WerkzeugkastenAktion { HINTERGRUND, BILD_TEILEN, BILDSCHIRMFOTO, LUPE, ISERV }
@@ -379,8 +392,7 @@ enum class AllgemeinesSymbol { SCHLIESSEN, MENUE, TEILEN, PAPIERKORB, RUECKGAENG
 
 @Composable
 fun AllgemeinSymbol(symbol: AllgemeinesSymbol, modifier: Modifier = Modifier, tint: Color = Color.Black) {
-    Canvas(modifier = modifier) {
-        val w = size.width; val h = size.height
+    Canvas(modifier = modifier) { symbolRaster { w, h ->
         val stroke = Stroke(width = 2.4f, cap = StrokeCap.Round, join = StrokeJoin.Round)
         when (symbol) {
             AllgemeinesSymbol.SCHLIESSEN -> {
@@ -437,7 +449,7 @@ fun AllgemeinSymbol(symbol: AllgemeinesSymbol, modifier: Modifier = Modifier, ti
                 tint
             )
         }
-    }
+    } }
 }
 
 private fun DrawScope.pfeilBogen(tint: Color, w: Float, h: Float, gespiegelt: Boolean) {
@@ -461,8 +473,7 @@ private fun DrawScope.pfeilBogen(tint: Color, w: Float, h: Float, gespiegelt: Bo
 
 @Composable
 fun WerkzeugkastenSymbol(aktion: WerkzeugkastenAktion, modifier: Modifier = Modifier, tint: Color = Color.Black) {
-    Canvas(modifier = modifier) {
-        val w = size.width; val h = size.height
+    Canvas(modifier = modifier) { symbolRaster { w, h ->
         val stroke = Stroke(width = 2f, cap = StrokeCap.Round, join = StrokeJoin.Round)
         when (aktion) {
             WerkzeugkastenAktion.HINTERGRUND -> {
@@ -494,7 +505,7 @@ fun WerkzeugkastenSymbol(aktion: WerkzeugkastenAktion, modifier: Modifier = Modi
                     size = androidx.compose.ui.geometry.Size(w * 0.68f, h * 0.48f),
                     cornerRadius = androidx.compose.ui.geometry.CornerRadius(6f), style = stroke
                 )
-                drawCircle(tint, radius = w * 0.13f, center = center, style = Stroke(width = 1.8f))
+                drawCircle(tint, radius = w * 0.13f, center = Offset(w / 2, h / 2), style = Stroke(width = 1.8f))
                 drawRect(tint, topLeft = Offset(w * 0.4f, h * 0.16f), size = androidx.compose.ui.geometry.Size(w * 0.2f, h * 0.12f))
             }
             WerkzeugkastenAktion.LUPE -> {
@@ -515,5 +526,5 @@ fun WerkzeugkastenSymbol(aktion: WerkzeugkastenAktion, modifier: Modifier = Modi
                 linie(Offset(w * 0.5f, h * 0.42f), Offset(w * 0.62f, h * 0.56f), tint, 2.2f)
             }
         }
-    }
+    } }
 }

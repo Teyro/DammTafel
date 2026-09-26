@@ -33,7 +33,6 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -51,8 +50,6 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.unit.Density
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
@@ -80,6 +77,7 @@ import de.oejendorferdamm.dammboard.ui.icons.StiftArtSymbol
 import de.oejendorferdamm.dammboard.ui.icons.WerkzeugSymbol
 import de.oejendorferdamm.dammboard.ui.icons.WerkzeugkastenAktion
 import de.oejendorferdamm.dammboard.ui.icons.WerkzeugkastenSymbol
+import de.oejendorferdamm.dammboard.ui.icons.symbolRaster
 
 private fun werkzeugBeschreibung(werkzeug: Werkzeug): String = when (werkzeug) {
     Werkzeug.STIFT -> "Stift"
@@ -101,7 +99,6 @@ private val SymbolFarbeSchwach = Color(0xFF8A8880)
 fun TafelWerkzeugleiste(
     state: TafelState,
     animationsModus: AnimationsModus,
-    symbolSkalierung: Float,
     zeigeUpdatePunkt: Boolean,
     onMenu: () -> Unit,
     onTeilen: () -> Unit,
@@ -113,20 +110,9 @@ fun TafelWerkzeugleiste(
         state.offenesPanel?.let { letztesPanel = it }
     }
 
-    // Skaliert die komplette Werkzeugleiste (Icons, Tippflächen und Abstände gleichermaßen –
-    // eine reine Modifier.scale()-Lösung würde nur optisch vergrößern, die Tippflächen aber
-    // klein lassen, was auf einem Touchscreen zu Fehltreffern führen würde).
-    val basisDichte = LocalDensity.current
-    val skalierteDichte = remember(basisDichte, symbolSkalierung) {
-        Density(density = basisDichte.density * symbolSkalierung, fontScale = basisDichte.fontScale)
-    }
-
-    // modifier (u. a. navigationBarsPadding) bleibt bewusst außerhalb des CompositionLocalProvider,
-    // damit echte System-Insets weiter mit der echten Dichte umgerechnet werden – nur der Inhalt
-    // selbst (Icons, Popups, Tippflächen) wird skaliert.
+    // Größe/Skalierung kommt von außen (TafelScreen → SkalierteDichte): dieselbe Anpassung gilt
+    // damit für Leiste, Seitenanzeige und Beenden-Knopf gemeinsam.
     Column(modifier = modifier, horizontalAlignment = Alignment.CenterHorizontally) {
-    CompositionLocalProvider(LocalDensity provides skalierteDichte) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
         if (animationsModus == AnimationsModus.NORMAL) {
             AnimatedVisibility(
                 visible = state.offenesPanel != null,
@@ -149,8 +135,6 @@ fun TafelWerkzeugleiste(
             }
         }
         HauptLeiste(state, zeigeUpdatePunkt, onMenu, onTeilen)
-    }
-    }
     }
 }
 
@@ -426,8 +410,10 @@ private fun VertikalerRegler(
         // Auf einem großen Touch-Board aus normalem Betrachtungsabstand ist eine dünne 4px-Linie
         // praktisch unsichtbar – deutlich kräftigere Leiste, dazu ein Füllbalken als Mengenanzeige
         // (wie bei einem Pegel), damit die aktuell eingestellte Dicke auf einen Blick klar ist.
-        val rand = 10f
-        val leistenBreite = 14f
+        // In dp statt festen Pixeln: sonst wirkte der Regler je nach Pixeldichte des Boards mal
+        // kräftig, mal hauchdünn, und wuchs mit der Symbolgröße nicht mit.
+        val rand = 5.dp.toPx()
+        val leistenBreite = 7.5.dp.toPx()
         drawLine(
             color = Color(0xFFDAD8CF), start = Offset(size.width / 2, rand), end = Offset(size.width / 2, size.height - rand),
             strokeWidth = leistenBreite, cap = StrokeCap.Round
@@ -437,8 +423,9 @@ private fun VertikalerRegler(
             color = Color(0xFF3A3A36), start = Offset(size.width / 2, knopfY), end = Offset(size.width / 2, size.height - rand),
             strokeWidth = leistenBreite, cap = StrokeCap.Round
         )
-        drawCircle(Color.White, radius = 13f, center = Offset(size.width / 2, knopfY))
-        drawCircle(Color(0xFFE33B3B), radius = 13f, center = Offset(size.width / 2, knopfY), style = Stroke(width = 3.5f))
+        val knopfRadius = 7.dp.toPx()
+        drawCircle(Color.White, radius = knopfRadius, center = Offset(size.width / 2, knopfY))
+        drawCircle(Color(0xFFE33B3B), radius = knopfRadius, center = Offset(size.width / 2, knopfY), style = Stroke(width = 2.dp.toPx()))
     }
 }
 
@@ -529,7 +516,8 @@ private fun RandVorschau(farbe: Color, breite: Float) {
             drawLine(
                 color = farbe,
                 start = Offset(0f, size.height / 2), end = Offset(size.width, size.height / 2),
-                strokeWidth = breite.coerceIn(2f, 8f), cap = StrokeCap.Round
+                // Relativ zur Vorschauhöhe statt in festen Pixeln – bei Faktor 1 wie bisher.
+                strokeWidth = breite.coerceIn(2f, 8f) / 12f * size.height, cap = StrokeCap.Round
             )
         }
         AllgemeinSymbol(AllgemeinesSymbol.PFEIL_RECHTS, Modifier.size(10.dp), SymbolFarbeSchwach)
@@ -702,8 +690,7 @@ private fun WerkzeugkastenPanelInhalt(state: TafelState, onIServ: () -> Unit) {
 
 @Composable
 private fun MusterSymbol(muster: MusterTyp, modifier: Modifier = Modifier) {
-    Canvas(modifier = modifier) {
-        val w = size.width; val h = size.height
+    Canvas(modifier = modifier) { symbolRaster { w, h ->
         when (muster) {
             MusterTyp.KEIN -> drawLine(SymbolFarbeSchwach, Offset(w * 0.2f, h * 0.5f), Offset(w * 0.8f, h * 0.5f), strokeWidth = 2f)
             MusterTyp.LINIERT -> {
@@ -745,7 +732,7 @@ private fun MusterSymbol(muster: MusterTyp, modifier: Modifier = Modifier) {
                 drawLine(SymbolFarbe, Offset(w * 0.68f, h * 0.18f), Offset(w * 0.68f, h * 0.82f), strokeWidth = 1.2f)
             }
         }
-    }
+    } }
 }
 
 @Composable

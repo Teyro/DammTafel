@@ -17,7 +17,12 @@
             android:name=".MainActivity"
             android:exported="true"
             android:screenOrientation="landscape"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|touchscreen|uiMode|density|fontScale|locale|layoutDirection"
             android:theme="@style/Theme.DammBoard">
+            <!-- configChanges: Die Oberfläche ist komplett Compose und passt sich selbst an. Ohne
+                 diese Angabe würde Android die Activity z. B. beim Anstecken einer Tastatur, beim
+                 Umschalten des Bildschirmmodus oder bei Änderung der Anzeigegröße neu starten –
+                 und dabei den gesamten Tafelinhalt aller Seiten verwerfen. -->
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

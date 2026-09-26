@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -50,7 +51,38 @@ import kotlin.math.hypot
 import kotlin.math.sin
 
 private val markierungsFarbe = Color(0xFF2F80FF)
-private val gestricheltEffekt = PathEffect.dashPathEffect(floatArrayOf(10f, 8f), 0f)
+
+/**
+ * Die Zeichenfläche rechnet in echten Bildschirmpixeln. Damit Radierer, Lineal, Hilfslinien,
+ * Beschriftungen und Stiftdicken auf einem 4K-Board genauso groß wirken wie auf einem
+ * Full-HD-Board, wachsen diese Pixelwerte mit der Auflösung – bis Full HD bleibt alles wie bisher.
+ */
+private fun pixelFaktorFuer(breite: Float, hoehe: Float): Float {
+    val lang = maxOf(breite, hoehe)
+    val kurz = minOf(breite, hoehe)
+    if (kurz <= 0f) return 1f
+    return minOf(lang / 1920f, kurz / 1080f).coerceIn(1f, 4f)
+}
+
+private val DrawScope.pixelFaktor: Float get() = pixelFaktorFuer(size.width, size.height)
+
+// Strichelung passend zum Pixelfaktor; nur neu erzeugt, wenn sich der Faktor ändert.
+private var strichelFaktor = 1f
+private var strichelEffekt = PathEffect.dashPathEffect(floatArrayOf(10f, 8f), 0f)
+
+private fun gestricheltEffekt(p: Float): PathEffect {
+    if (p != strichelFaktor) {
+        strichelEffekt = PathEffect.dashPathEffect(floatArrayOf(10f * p, 8f * p), 0f)
+        strichelFaktor = p
+    }
+    return strichelEffekt
+}
+
+/** Eine wiederverwendete Paint für Längenbeschriftungen statt einer neuen pro Beschriftung und Frame. */
+private val etikettPinsel = android.graphics.Paint().apply {
+    color = android.graphics.Color.WHITE
+    isAntiAlias = true
+}
 
 private fun punktInPolygon(punkt: Offset, polygon: List<Offset>): Boolean {
     if (polygon.size < 3) return false
@@ -70,6 +102,85 @@ private fun punktInPolygon(punkt: Offset, polygon: List<Offset>): Boolean {
 private fun mitte(a: Offset, b: Offset) = Offset((a.x + b.x) / 2, (a.y + b.y) / 2)
 
 private fun pxNachCm(px: Float, density: Density): Float = px / density.density / 160f * 2.54f
+
+/**
+ * Freihandstrich, der gerade gezeichnet wird. Punkte und geglätteter Pfad wachsen nur hinten an,
+ * statt bei jedem Bewegungsereignis die komplette Punktliste zu kopieren und den Pfad neu
+ * aufzubauen – bei langen Strichen war das quadratischer Aufwand und auf alten Boards spürbar.
+ * [stand] ist der einzige Compose-State: er löst das Neuzeichnen aus.
+ */
+private class LaufenderStrich {
+    val punkte = ArrayList<Offset>()
+    private val pfad = Path()
+    private var stand by mutableIntStateOf(0)
+
+    fun beginne(punkt: Offset) {
+        punkte.clear()
+        punkte.add(punkt)
+        pfad.reset()
+        pfad.moveTo(punkt.x, punkt.y)
+        stand++
+    }
+
+    fun fuegeHinzu(punkt: Offset) {
+        punkte.add(punkt)
+        val n = punkte.size
+        if (n >= 3) {
+            // Dieselbe Glättung wie glatterPfad(): Kurve bis zur Mitte des neuesten Punktpaares.
+            val vorher = punkte[n - 2]
+            pfad.quadraticTo(vorher.x, vorher.y, (vorher.x + punkt.x) / 2f, (vorher.y + punkt.y) / 2f)
+        }
+        stand++
+    }
+
+    fun beende() {
+        if (punkte.isEmpty()) return
+        punkte.clear()
+        pfad.reset()
+        stand++
+    }
+
+    fun zeichneIn(scope: DrawScope, farbe: Color, breite: Float) {
+        if (stand == 0 || punkte.isEmpty()) return
+        if (punkte.size == 1) {
+            scope.drawCircle(farbe, radius = breite / 2, center = punkte[0])
+            return
+        }
+        // Wie in glatterPfad(): das letzte Stück vom letzten Kurvenende zum Finger gerade.
+        val anzeige = Path().apply {
+            addPath(pfad)
+            lineTo(punkte.last().x, punkte.last().y)
+        }
+        scope.drawPath(
+            anzeige, farbe,
+            style = Stroke(width = breite, cap = StrokeCap.Round, join = androidx.compose.ui.graphics.StrokeJoin.Round)
+        )
+    }
+}
+
+/**
+ * Merkt sich die geglätteten Pfade fertiger Striche zwischen zwei Neuaufbauten der eingebrannten
+ * Ebene – beim Radieren oder Verschieben wird so nur neu berechnet, was sich wirklich geändert
+ * hat. Was beim nächsten Aufbau nicht mehr vorkommt (gelöscht, verschoben), fällt heraus.
+ */
+private class PfadCache {
+    private var bisher = HashMap<Long, Pair<List<Offset>, Path>>()
+    private var neu = HashMap<Long, Pair<List<Offset>, Path>>()
+
+    fun pfadFuer(strich: StrichItem): Path {
+        val alt = bisher[strich.id]
+        val pfad = if (alt != null && alt.first === strich.punkte) alt.second else glatterPfad(strich.punkte)
+        neu[strich.id] = strich.punkte to pfad
+        return pfad
+    }
+
+    fun durchgangBeenden() {
+        val tausch = bisher
+        bisher = neu
+        neu = tausch
+        neu.clear()
+    }
+}
 
 /** Reiner Merker (kein Compose-State) für den letzten Stand der eingebrannten Ebene. */
 private class EbenenCache {
@@ -102,6 +213,7 @@ fun TafelCanvas(
     // Das hält das Zeichnen auch bei vielen angesammelten Strichen flüssig.
     val eingebrannteEbene = rememberGraphicsLayer()
     val ebenenCache = remember { EbenenCache() }
+    val pfadCache = remember { PfadCache() }
 
     LaunchedEffect(state.aufnahmeAnfrage) {
         val zweck = state.aufnahmeAnfrage ?: return@LaunchedEffect
@@ -109,7 +221,7 @@ fun TafelCanvas(
         state.aufnahmeAnfrage = null
     }
 
-    var laufenderStrich by remember { mutableStateOf<List<Offset>?>(null) }
+    val laufenderStrich = remember { LaufenderStrich() }
     var formVorschau by remember { mutableStateOf<Pair<Offset, Offset>?>(null) }
     var zirkelVorschau by remember { mutableStateOf<Pair<Offset, Float>?>(null) }
 
@@ -136,36 +248,36 @@ fun TafelCanvas(
             state.radiererGroesse, state.geometrieWerkzeug, state.geometrieGestrichelt, state.zeigeLaenge,
             minPunktAbstandPx
         ) {
-            val brettGroesse = Size(size.width.toFloat(), size.height.toFloat())
+            // Bei jedem Aufruf frisch gelesen: die Fläche kann ihre Größe ändern (z. B. beim
+            // Wechsel des Bildschirmmodus), ohne dass dieser Block neu startet.
+            fun brettGroesse() = Size(size.width.toFloat(), size.height.toFloat())
+            fun pf() = pixelFaktorFuer(size.width.toFloat(), size.height.toFloat())
             when (state.werkzeug) {
                 Werkzeug.STIFT -> detectDragGestures(
-                    onDragStart = { laufenderStrich = listOf(it) },
+                    onDragStart = { laufenderStrich.beginne(it) },
                     onDrag = { change, _ ->
                         change.consume()
-                        val bisherige = laufenderStrich.orEmpty()
-                        val letzterPunkt = bisherige.lastOrNull()
-                        if (letzterPunkt == null || (change.position - letzterPunkt).getDistance() >= minPunktAbstandPx) {
-                            laufenderStrich = bisherige + change.position
+                        val letzterPunkt = laufenderStrich.punkte.lastOrNull()
+                        if (letzterPunkt == null || (change.position - letzterPunkt).getDistance() >= minPunktAbstandPx * pf()) {
+                            laufenderStrich.fuegeHinzu(change.position)
                         }
                     },
                     onDragEnd = {
-                        laufenderStrich?.let { punkte ->
-                            if (punkte.size > 1) {
-                                seite.hinzufuegen(
-                                    StrichItem(naechsteId(), punkte, state.stiftFarbe, state.aktuelleStiftBreite)
-                                )
-                            }
+                        if (laufenderStrich.punkte.size > 1) {
+                            seite.hinzufuegen(
+                                StrichItem(naechsteId(), laufenderStrich.punkte.toList(), state.stiftFarbe, state.aktuelleStiftBreite * pf())
+                            )
                         }
-                        laufenderStrich = null
+                        laufenderStrich.beende()
                     },
-                    onDragCancel = { laufenderStrich = null }
+                    onDragCancel = { laufenderStrich.beende() }
                 )
 
                 Werkzeug.RADIERER -> detectDragGestures(
-                    onDragStart = { seite.radiereBeruehrte(it, state.radiererGroesse.radius) },
+                    onDragStart = { seite.radiereBeruehrte(it, state.radiererGroesse.radius * pf()) },
                     onDrag = { change, _ ->
                         change.consume()
-                        seite.radiereBeruehrte(change.position, state.radiererGroesse.radius)
+                        seite.radiereBeruehrte(change.position, state.radiererGroesse.radius * pf())
                     },
                     onDragEnd = { seite.radierenAbschliessen() },
                     onDragCancel = { seite.radierenAbschliessen() }
@@ -179,12 +291,12 @@ fun TafelCanvas(
                     },
                     onDragEnd = {
                         formVorschau?.let { (start, ende) ->
-                            if ((start - ende).getDistance() > 4f) {
+                            if ((start - ende).getDistance() > 4f * pf()) {
                                 val gestrichelt = state.formTyp in gestrichelteFormen
                                 seite.hinzufuegen(
                                     FormItem(
                                         naechsteId(), state.formTyp, start, ende,
-                                        state.formRandFarbe, state.formFuellFarbe, state.formRandBreite, gestrichelt
+                                        state.formRandFarbe, state.formFuellFarbe, state.formRandBreite * pf(), gestrichelt
                                     )
                                 )
                             }
@@ -213,7 +325,12 @@ fun TafelCanvas(
                             auswahlGesamtDelta += schritt
                             auswahlLetzterPunkt = change.position
                         } else {
-                            state.lassoPfad = state.lassoPfad.orEmpty() + change.position
+                            // Nur Punkte mit etwas Abstand – der Pfad wird bei jedem Schritt kopiert.
+                            val bisher = state.lassoPfad.orEmpty()
+                            val letzter = bisher.lastOrNull()
+                            if (letzter == null || (change.position - letzter).getDistance() >= 4f * pf()) {
+                                state.lassoPfad = bisher + change.position
+                            }
                         }
                     },
                     onDragEnd = {
@@ -221,7 +338,7 @@ fun TafelCanvas(
                             // Ein bloßes Antippen innerhalb der Auswahl (keine echte Bewegung)
                             // hebt die Auswahl auf, statt sie unsichtbar "hängen" zu lassen.
                             val bewegt = auswahlStartPunkt != null && auswahlLetzterPunkt != null &&
-                                (auswahlLetzterPunkt!! - auswahlStartPunkt!!).getDistance() > 6f
+                                (auswahlLetzterPunkt!! - auswahlStartPunkt!!).getDistance() > 6f * pf()
                             if (!bewegt) {
                                 seite.ausgewaehlteIds.clear()
                             } else {
@@ -232,11 +349,12 @@ fun TafelCanvas(
                         } else {
                             val pfad = state.lassoPfad
                             if (pfad != null && pfad.size > 2) {
-                                seite.ausgewaehlteIds.clear()
-                                seite.items.forEach { item ->
+                                val treffer = seite.items.filter { item ->
                                     val (min, max) = item.begrenzendesRechteck()
-                                    if (punktInPolygon(mitte(min, max), pfad)) seite.ausgewaehlteIds.add(item.id)
+                                    punktInPolygon(mitte(min, max), pfad)
                                 }
+                                seite.ausgewaehlteIds.clear()
+                                seite.ausgewaehlteIds.addAll(treffer.map { it.id })
                             } else {
                                 seite.ausgewaehlteIds.clear()
                             }
@@ -279,7 +397,7 @@ fun TafelCanvas(
                     onDragEnd = {
                         if (auswahlModusVerschieben) {
                             val bewegt = auswahlStartPunkt != null && auswahlLetzterPunkt != null &&
-                                (auswahlLetzterPunkt!! - auswahlStartPunkt!!).getDistance() > 6f
+                                (auswahlLetzterPunkt!! - auswahlStartPunkt!!).getDistance() > 6f * pf()
                             if (!bewegt) {
                                 seite.ausgewaehlteIds.clear()
                             } else {
@@ -289,12 +407,12 @@ fun TafelCanvas(
                             state.auswahlRechteck?.let { (a, b) ->
                                 val minX = minOf(a.x, b.x); val maxX = maxOf(a.x, b.x)
                                 val minY = minOf(a.y, b.y); val maxY = maxOf(a.y, b.y)
-                                seite.ausgewaehlteIds.clear()
-                                seite.items.forEach { item ->
+                                val treffer = seite.items.filter { item ->
                                     val (imin, imax) = item.begrenzendesRechteck()
-                                    val schneidet = imin.x <= maxX && imax.x >= minX && imin.y <= maxY && imax.y >= minY
-                                    if (schneidet) seite.ausgewaehlteIds.add(item.id)
+                                    imin.x <= maxX && imax.x >= minX && imin.y <= maxY && imax.y >= minY
                                 }
+                                seite.ausgewaehlteIds.clear()
+                                seite.ausgewaehlteIds.addAll(treffer.map { it.id })
                             }
                         }
                         state.auswahlRechteck = null
@@ -315,9 +433,9 @@ fun TafelCanvas(
                         if (state.geometrieWerkzeug == GeometrieWerkzeug.ZIRKEL) {
                             zirkelVorschau = start to 0f
                         } else {
-                            val zentrum = geometrieZentrum(brettGroesse)
-                            val griffWelt = geometrieGriffPosition(zentrum, state.geometrieFuehrung.winkelGrad)
-                            geometrieModusRotation = hypot(start.x - griffWelt.x, start.y - griffWelt.y) < 34f
+                            val zentrum = geometrieZentrum(brettGroesse())
+                            val griffWelt = geometrieGriffPosition(zentrum, state.geometrieFuehrung.winkelGrad, pf())
+                            geometrieModusRotation = hypot(start.x - griffWelt.x, start.y - griffWelt.y) < 34f * pf()
                             if (!geometrieModusRotation) formVorschau = start to start
                         }
                     },
@@ -328,7 +446,7 @@ fun TafelCanvas(
                                 zirkelVorschau = pivot to hypot(change.position.x - pivot.x, change.position.y - pivot.y)
                             }
                         } else if (geometrieModusRotation) {
-                            val zentrum = geometrieZentrum(brettGroesse)
+                            val zentrum = geometrieZentrum(brettGroesse())
                             val winkel = atan2(change.position.y - zentrum.y, change.position.x - zentrum.x)
                             state.geometrieFuehrung.winkelGrad = Math.toDegrees(winkel.toDouble()).toFloat()
                         } else if (istDreiecksWerkzeug(state.geometrieWerkzeug)) {
@@ -349,24 +467,24 @@ fun TafelCanvas(
                     onDragEnd = {
                         if (state.geometrieWerkzeug == GeometrieWerkzeug.ZIRKEL) {
                             zirkelVorschau?.let { (pivot, radius) ->
-                                if (radius > 4f) {
+                                if (radius > 4f * pf()) {
                                     seite.hinzufuegen(
                                         FormItem(
                                             naechsteId(), FormTyp.KREIS,
                                             pivot - Offset(radius, radius), pivot + Offset(radius, radius),
-                                            state.stiftFarbe, null, 4f, false
+                                            state.stiftFarbe, null, 4f * pf(), false
                                         )
                                     )
                                     if (state.zeigeLaenge) {
                                         val text = "%.1f cm".format(pxNachCm(radius, dichte))
-                                        seite.hinzufuegen(LaengenEtikett(naechsteId(), pivot + Offset(radius + 8f, 0f), text))
+                                        seite.hinzufuegen(LaengenEtikett(naechsteId(), pivot + Offset(radius + 8f * pf(), 0f), text))
                                     }
                                 }
                             }
                             zirkelVorschau = null
                         } else if (!geometrieModusRotation) {
                             formVorschau?.let { (start, ende) ->
-                                if ((start - ende).getDistance() > 6f) {
+                                if ((start - ende).getDistance() > 6f * pf()) {
                                     val dreieck = istDreiecksWerkzeug(state.geometrieWerkzeug)
                                     val formTyp = when {
                                         dreieck && state.geometrieWerkzeug == GeometrieWerkzeug.GLEICHSCHENKLIG -> FormTyp.DREIECK
@@ -377,12 +495,12 @@ fun TafelCanvas(
                                     seite.hinzufuegen(
                                         FormItem(
                                             naechsteId(), formTyp, start, ende,
-                                            state.stiftFarbe, null, 3.5f, !dreieck && state.geometrieGestrichelt
+                                            state.stiftFarbe, null, 3.5f * pf(), !dreieck && state.geometrieGestrichelt
                                         )
                                     )
                                     if (state.zeigeLaenge && !dreieck) {
                                         val text = "%.1f cm".format(pxNachCm((start - ende).getDistance(), dichte))
-                                        seite.hinzufuegen(LaengenEtikett(naechsteId(), mitte(start, ende) + Offset(0f, -14f), text))
+                                        seite.hinzufuegen(LaengenEtikett(naechsteId(), mitte(start, ende) + Offset(0f, -14f * pf()), text))
                                     }
                                 }
                             }
@@ -423,6 +541,7 @@ fun TafelCanvas(
             val hintergrund = seite.hintergrund.value
             val hintergrundHash = hintergrund.hashCode()
             val geteilt = seite.geteilteAnsicht.value
+            val p = pixelFaktor
 
             if (ebenenCache.seiteHash != seiteHash || ebenenCache.version != version ||
                 ebenenCache.breite != breitePx || ebenenCache.hoehe != hoehePx ||
@@ -435,10 +554,11 @@ fun TafelCanvas(
                         drawLine(
                             color = Color.White.copy(alpha = 0.35f),
                             start = Offset(this.size.width / 2, 0f), end = Offset(this.size.width / 2, this.size.height),
-                            strokeWidth = 2f, pathEffect = gestricheltEffekt
+                            strokeWidth = 2f * p, pathEffect = gestricheltEffekt(p)
                         )
                     }
-                    seite.items.forEach { item -> zeichneItem(item) }
+                    seite.items.forEach { item -> zeichneItem(item, pfadCache) }
+                    pfadCache.durchgangBeenden()
                 }
                 ebenenCache.seiteHash = seiteHash
                 ebenenCache.version = version
@@ -454,14 +574,12 @@ fun TafelCanvas(
                 seite.items.forEach { item -> if (item.id in ausgewaehltSet) zeichneMarkierung(item) }
             }
 
-            laufenderStrich?.let { punkte ->
-                zeichneItem(StrichItem(-1, punkte, state.stiftFarbe, state.aktuelleStiftBreite))
-            }
+            laufenderStrich.zeichneIn(this, state.stiftFarbe, state.aktuelleStiftBreite * p)
 
             formVorschau?.let { (start, ende) ->
                 if (state.werkzeug == Werkzeug.FORMEN) {
                     val gestrichelt = state.formTyp in gestrichelteFormen
-                    zeichneItem(FormItem(-1, state.formTyp, start, ende, state.formRandFarbe, state.formFuellFarbe, state.formRandBreite, gestrichelt))
+                    zeichneItem(FormItem(-1, state.formTyp, start, ende, state.formRandFarbe, state.formFuellFarbe, state.formRandBreite * p, gestrichelt))
                 } else if (state.werkzeug == Werkzeug.GEOMETRIE) {
                     val dreieck = istDreiecksWerkzeug(state.geometrieWerkzeug)
                     val formTyp = when {
@@ -472,7 +590,7 @@ fun TafelCanvas(
                     }
                     zeichneItem(
                         FormItem(
-                            -1, formTyp, start, ende, state.stiftFarbe, null, 3.5f, !dreieck && state.geometrieGestrichelt
+                            -1, formTyp, start, ende, state.stiftFarbe, null, 3.5f * p, !dreieck && state.geometrieGestrichelt
                         )
                     )
                 }
@@ -480,18 +598,18 @@ fun TafelCanvas(
 
             zirkelVorschau?.let { (pivot, radius) ->
                 if (radius > 1f) {
-                    drawCircle(state.stiftFarbe, radius = radius, center = pivot, style = Stroke(width = 3.5f))
+                    drawCircle(state.stiftFarbe, radius = radius, center = pivot, style = Stroke(width = 4f * p))
                 }
-                drawCircle(state.stiftFarbe.copy(alpha = 0.5f), radius = 4f, center = pivot)
+                drawCircle(state.stiftFarbe.copy(alpha = 0.5f), radius = 4f * p, center = pivot)
             }
 
             state.lassoPfad?.let { pfad ->
                 if (pfad.size > 1) {
-                    val p = Path().apply {
+                    val lasso = Path().apply {
                         moveTo(pfad.first().x, pfad.first().y)
-                        pfad.drop(1).forEach { lineTo(it.x, it.y) }
+                        for (i in 1 until pfad.size) lineTo(pfad[i].x, pfad[i].y)
                     }
-                    drawPath(p, markierungsFarbe, style = Stroke(width = 2.5f, pathEffect = gestricheltEffekt))
+                    drawPath(lasso, markierungsFarbe, style = Stroke(width = 2.5f * p, pathEffect = gestricheltEffekt(p)))
                 }
             }
 
@@ -499,7 +617,7 @@ fun TafelCanvas(
                 val topLeft = Offset(minOf(a.x, b.x), minOf(a.y, b.y))
                 val gr = Size(kotlin.math.abs(a.x - b.x), kotlin.math.abs(a.y - b.y))
                 drawRect(markierungsFarbe.copy(alpha = 0.12f), topLeft = topLeft, size = gr)
-                drawRect(markierungsFarbe, topLeft = topLeft, size = gr, style = Stroke(width = 2f, pathEffect = gestricheltEffekt))
+                drawRect(markierungsFarbe, topLeft = topLeft, size = gr, style = Stroke(width = 2f * p, pathEffect = gestricheltEffekt(p)))
             }
 
             if (state.werkzeug == Werkzeug.GEOMETRIE && state.geometrieWerkzeug != GeometrieWerkzeug.ZIRKEL) {
@@ -509,8 +627,9 @@ fun TafelCanvas(
     }
 }
 
-private fun ausgewaehlteBegrenzung(items: List<BoardItem>, ids: List<Long>): Pair<Offset?, Offset?> {
-    if (ids.isEmpty()) return null to null
+private fun ausgewaehlteBegrenzung(items: List<BoardItem>, idListe: List<Long>): Pair<Offset?, Offset?> {
+    if (idListe.isEmpty()) return null to null
+    val ids = idListe.toHashSet()
     var minX = Float.MAX_VALUE; var minY = Float.MAX_VALUE
     var maxX = -Float.MAX_VALUE; var maxY = -Float.MAX_VALUE
     var gefunden = false
@@ -527,39 +646,40 @@ private fun ausgewaehlteBegrenzung(items: List<BoardItem>, ids: List<Long>): Pai
 
 private fun geometrieZentrum(groesse: Size): Offset = Offset(groesse.width * 0.5f, groesse.height * 0.28f)
 
-private fun geometrieGriffPosition(zentrum: Offset, winkelGrad: Float): Offset {
+private fun geometrieGriffPosition(zentrum: Offset, winkelGrad: Float, p: Float): Offset {
     val winkelRad = Math.toRadians(winkelGrad.toDouble())
-    val abstand = 170f
+    val abstand = 170f * p
     return zentrum + Offset(cos(winkelRad).toFloat() * abstand, sin(winkelRad).toFloat() * abstand)
 }
 
 private fun DrawScope.zeichneGeometrieFuehrung(werkzeug: GeometrieWerkzeug, zentrum: Offset, winkelGrad: Float) {
+    val p = pixelFaktor
     rotate(degrees = winkelGrad, pivot = zentrum) {
         val farbe = Color.White.copy(alpha = 0.55f)
         when (werkzeug) {
             GeometrieWerkzeug.LINEAL -> drawRoundRect(
-                farbe, topLeft = zentrum - Offset(150f, 22f), size = Size(300f, 44f),
-                cornerRadius = androidx.compose.ui.geometry.CornerRadius(6f), style = Stroke(width = 2.5f)
+                farbe, topLeft = zentrum - Offset(150f, 22f) * p, size = Size(300f, 44f) * p,
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(6f * p), style = Stroke(width = 2.5f * p)
             )
             GeometrieWerkzeug.WINKELMESSER -> drawArc(
                 farbe, startAngle = 180f, sweepAngle = 180f, useCenter = false,
-                topLeft = zentrum - Offset(140f, 140f), size = Size(280f, 280f), style = Stroke(width = 2.5f)
+                topLeft = zentrum - Offset(140f, 140f) * p, size = Size(280f, 280f) * p, style = Stroke(width = 2.5f * p)
             )
             GeometrieWerkzeug.ZIRKEL -> {}
             else -> {
-                val p = Path().apply {
-                    moveTo(zentrum.x, zentrum.y - 130f)
-                    lineTo(zentrum.x + 150f, zentrum.y + 90f)
-                    lineTo(zentrum.x - 150f, zentrum.y + 90f)
+                val dreieck = Path().apply {
+                    moveTo(zentrum.x, zentrum.y - 130f * p)
+                    lineTo(zentrum.x + 150f * p, zentrum.y + 90f * p)
+                    lineTo(zentrum.x - 150f * p, zentrum.y + 90f * p)
                     close()
                 }
-                drawPath(p, farbe, style = Stroke(width = 2.5f))
+                drawPath(dreieck, farbe, style = Stroke(width = 2.5f * p))
             }
         }
     }
-    val griff = geometrieGriffPosition(zentrum, winkelGrad)
-    drawCircle(Color.White, radius = 14f, center = griff, style = Stroke(width = 3f))
-    drawCircle(Color.White.copy(alpha = 0.5f), radius = 5f, center = griff)
+    val griff = geometrieGriffPosition(zentrum, winkelGrad, p)
+    drawCircle(Color.White, radius = 14f * p, center = griff, style = Stroke(width = 3f * p))
+    drawCircle(Color.White.copy(alpha = 0.5f), radius = 5f * p, center = griff)
 }
 
 private fun DrawScope.zeichneMuster(muster: MusterTyp, basisFarbe: Color) {
@@ -569,24 +689,25 @@ private fun DrawScope.zeichneMuster(muster: MusterTyp, basisFarbe: Color) {
     // Deutlicher als die reinen Schreib-Hilfslinien: für Vorlagen, die auch inhaltlich als
     // Linien gelesen werden sollen (Notenlinien, Spielfeld, Stundenplan-Raster).
     val vorlagenFarbe = if (helligkeit > 0.5f) Color.Black.copy(alpha = 0.32f) else Color.White.copy(alpha = 0.38f)
-    val abstand = 48f
+    val p = pixelFaktor
+    val abstand = 48f * p
     when (muster) {
         MusterTyp.LINIERT -> {
             var y = abstand
             while (y < size.height) {
-                drawLine(linienFarbe, Offset(0f, y), Offset(size.width, y), strokeWidth = 1.4f)
+                drawLine(linienFarbe, Offset(0f, y), Offset(size.width, y), strokeWidth = 1.4f * p)
                 y += abstand
             }
         }
         MusterTyp.KARIERT -> {
             var x = abstand
             while (x < size.width) {
-                drawLine(linienFarbe, Offset(x, 0f), Offset(x, size.height), strokeWidth = 1.2f)
+                drawLine(linienFarbe, Offset(x, 0f), Offset(x, size.height), strokeWidth = 1.2f * p)
                 x += abstand
             }
             var y = abstand
             while (y < size.height) {
-                drawLine(linienFarbe, Offset(0f, y), Offset(size.width, y), strokeWidth = 1.2f)
+                drawLine(linienFarbe, Offset(0f, y), Offset(size.width, y), strokeWidth = 1.2f * p)
                 y += abstand
             }
         }
@@ -595,53 +716,53 @@ private fun DrawScope.zeichneMuster(muster: MusterTyp, basisFarbe: Color) {
             while (y < size.height) {
                 var x = abstand
                 while (x < size.width) {
-                    drawCircle(linienFarbe, radius = 2.2f, center = Offset(x, y))
+                    drawCircle(linienFarbe, radius = 2.2f * p, center = Offset(x, y))
                     x += abstand
                 }
                 y += abstand
             }
         }
         MusterTyp.NOTENLINIEN -> {
-            val linienAbstand = 14f
+            val linienAbstand = 14f * p
             val gruppenHoehe = linienAbstand * 4
-            val gruppenAbstand = 90f
-            val randX = 50f
-            var gruppenY = 70f
+            val gruppenAbstand = 90f * p
+            val randX = 50f * p
+            var gruppenY = 70f * p
             while (gruppenY < size.height - gruppenHoehe) {
                 for (i in 0 until 5) {
                     val y = gruppenY + i * linienAbstand
-                    drawLine(vorlagenFarbe, Offset(randX, y), Offset(size.width - randX, y), strokeWidth = 1.6f)
+                    drawLine(vorlagenFarbe, Offset(randX, y), Offset(size.width - randX, y), strokeWidth = 1.6f * p)
                 }
                 gruppenY += gruppenHoehe + gruppenAbstand
             }
         }
         MusterTyp.FUSSBALLFELD -> {
-            val rand = 60f
+            val rand = 60f * p
             val feldBreite = size.width - rand * 2
             val feldHoehe = size.height - rand * 2
             drawRect(
                 color = vorlagenFarbe, topLeft = Offset(rand, rand),
-                size = Size(feldBreite, feldHoehe), style = Stroke(width = 2.2f)
+                size = Size(feldBreite, feldHoehe), style = Stroke(width = 2.2f * p)
             )
-            drawLine(vorlagenFarbe, Offset(size.width / 2, rand), Offset(size.width / 2, size.height - rand), strokeWidth = 2.2f)
+            drawLine(vorlagenFarbe, Offset(size.width / 2, rand), Offset(size.width / 2, size.height - rand), strokeWidth = 2.2f * p)
             val kreisRadius = minOf(feldBreite, feldHoehe) * 0.14f
-            drawCircle(vorlagenFarbe, radius = kreisRadius, center = Offset(size.width / 2, size.height / 2), style = Stroke(width = 2.2f))
-            drawCircle(vorlagenFarbe, radius = 3f, center = Offset(size.width / 2, size.height / 2))
+            drawCircle(vorlagenFarbe, radius = kreisRadius, center = Offset(size.width / 2, size.height / 2), style = Stroke(width = 2.2f * p))
+            drawCircle(vorlagenFarbe, radius = 3f * p, center = Offset(size.width / 2, size.height / 2))
             val strafraumHoehe = feldHoehe * 0.5f
             val strafraumTiefe = feldBreite * 0.14f
             drawRect(
                 color = vorlagenFarbe,
                 topLeft = Offset(rand, size.height / 2 - strafraumHoehe / 2),
-                size = Size(strafraumTiefe, strafraumHoehe), style = Stroke(width = 2.2f)
+                size = Size(strafraumTiefe, strafraumHoehe), style = Stroke(width = 2.2f * p)
             )
             drawRect(
                 color = vorlagenFarbe,
                 topLeft = Offset(size.width - rand - strafraumTiefe, size.height / 2 - strafraumHoehe / 2),
-                size = Size(strafraumTiefe, strafraumHoehe), style = Stroke(width = 2.2f)
+                size = Size(strafraumTiefe, strafraumHoehe), style = Stroke(width = 2.2f * p)
             )
         }
         MusterTyp.STUNDENPLAN -> {
-            val randX = 50f; val randY = 50f
+            val randX = 50f * p; val randY = 50f * p
             val breiteGesamt = size.width - randX * 2
             val hoeheGesamt = size.height - randY * 2
             val spalten = 6
@@ -650,14 +771,14 @@ private fun DrawScope.zeichneMuster(muster: MusterTyp, basisFarbe: Color) {
                 val x = randX + breiteGesamt * i / spalten
                 drawLine(
                     vorlagenFarbe, Offset(x, randY), Offset(x, randY + hoeheGesamt),
-                    strokeWidth = if (i == 0 || i == spalten) 2.2f else 1.4f
+                    strokeWidth = (if (i == 0 || i == spalten) 2.2f else 1.4f) * p
                 )
             }
             for (i in 0..zeilen) {
                 val y = randY + hoeheGesamt * i / zeilen
                 drawLine(
                     vorlagenFarbe, Offset(randX, y), Offset(randX + breiteGesamt, y),
-                    strokeWidth = if (i <= 1 || i == zeilen) 2.2f else 1.4f
+                    strokeWidth = (if (i <= 1 || i == zeilen) 2.2f else 1.4f) * p
                 )
             }
         }
@@ -675,32 +796,29 @@ private val gestrichelteFormen = setOf(
 private fun istDreiecksWerkzeug(werkzeug: GeometrieWerkzeug): Boolean = werkzeug == GeometrieWerkzeug.WINKELDREIECK ||
     werkzeug == GeometrieWerkzeug.RECHTWINKLIG || werkzeug == GeometrieWerkzeug.GLEICHSCHENKLIG
 
-private fun DrawScope.zeichneItem(item: BoardItem) {
+private fun DrawScope.zeichneItem(item: BoardItem, pfadCache: PfadCache? = null) {
     when (item) {
-        is StrichItem -> zeichneStrich(item)
+        is StrichItem -> zeichneStrich(item, pfadCache)
         is FormItem -> zeichneForm(item)
-        is LaengenEtikett -> drawContext.canvas.nativeCanvas.drawText(
-            item.text, item.position.x, item.position.y,
-            android.graphics.Paint().apply {
-                color = android.graphics.Color.WHITE
-                textSize = 30f
-                isAntiAlias = true
-                setShadowLayer(4f, 0f, 0f, android.graphics.Color.BLACK)
-            }
-        )
+        is LaengenEtikett -> {
+            val p = pixelFaktor
+            etikettPinsel.textSize = 30f * p
+            etikettPinsel.setShadowLayer(4f * p, 0f, 0f, android.graphics.Color.BLACK)
+            drawContext.canvas.nativeCanvas.drawText(item.text, item.position.x, item.position.y, etikettPinsel)
+        }
     }
 }
 
-private fun DrawScope.zeichneStrich(strich: StrichItem) {
+private fun DrawScope.zeichneStrich(strich: StrichItem, pfadCache: PfadCache?) {
     if (strich.punkte.size < 2) {
         strich.punkte.firstOrNull()?.let { drawCircle(strich.farbe, radius = strich.breite / 2, center = it) }
         return
     }
     drawPath(
-        glatterPfad(strich.punkte), strich.farbe,
+        pfadCache?.pfadFuer(strich) ?: glatterPfad(strich.punkte), strich.farbe,
         style = Stroke(
             width = strich.breite, cap = StrokeCap.Round, join = androidx.compose.ui.graphics.StrokeJoin.Round,
-            pathEffect = if (strich.gestrichelt) gestricheltEffekt else null
+            pathEffect = if (strich.gestrichelt) gestricheltEffekt(pixelFaktor) else null
         )
     )
 }
@@ -728,14 +846,15 @@ private fun glatterPfad(punkte: List<Offset>): Path {
 }
 
 private fun DrawScope.zeichneMarkierung(item: BoardItem) {
+    val p = pixelFaktor
     val (min, max) = item.begrenzendesRechteck()
-    val polster = 10f
+    val polster = 10f * p
     drawRoundRect(
         markierungsFarbe,
         topLeft = min - Offset(polster, polster),
         size = Size((max.x - min.x) + polster * 2, (max.y - min.y) + polster * 2),
-        cornerRadius = androidx.compose.ui.geometry.CornerRadius(6f),
-        style = Stroke(width = 2.5f, pathEffect = gestricheltEffekt)
+        cornerRadius = androidx.compose.ui.geometry.CornerRadius(6f * p),
+        style = Stroke(width = 2.5f * p, pathEffect = gestricheltEffekt(p))
     )
 }
 
@@ -745,7 +864,7 @@ private fun DrawScope.zeichneForm(form: FormItem) {
     val h = kotlin.math.abs(form.ende.y - form.start.y)
     val randStil = Stroke(
         width = form.randBreite, cap = StrokeCap.Round, join = androidx.compose.ui.graphics.StrokeJoin.Round,
-        pathEffect = if (form.gestrichelt) gestricheltEffekt else null
+        pathEffect = if (form.gestrichelt) gestricheltEffekt(pixelFaktor) else null
     )
 
     fun fuelleUndZeichne(pfad: Path) {
@@ -805,7 +924,7 @@ private fun DrawScope.zeichnePfeil(start: Offset, ende: Offset, farbe: Color, br
 }
 
 private fun DrawScope.zeichnePfeilspitze(spitze: Offset, ansatz: Offset, farbe: Color, breite: Float) {
-    val laenge = 10f + breite
+    val laenge = 10f * pixelFaktor + breite
     val winkel = atan2(spitze.y - ansatz.y, spitze.x - ansatz.x)
     val a1 = winkel + Math.PI.toFloat() * 0.78f
     val a2 = winkel - Math.PI.toFloat() * 0.78f
@@ -849,12 +968,13 @@ private fun wellenPfad(topLeft: Offset, w: Float, h: Float): Path {
 }
 
 private fun DrawScope.zeichneLupe(graphicsLayer: GraphicsLayer, position: Offset) {
-    val radius = 90f
+    val p = pixelFaktor
+    val radius = 90f * p
     clipPath(Path().apply { addOval(Rect(center = position, radius = radius)) }) {
         scale(2.2f, pivot = position) {
             drawLayer(graphicsLayer)
         }
     }
-    drawCircle(Color.White, radius = radius, center = position, style = Stroke(width = 5f))
-    drawCircle(Color.Black.copy(alpha = 0.35f), radius = radius, center = position, style = Stroke(width = 1.5f))
+    drawCircle(Color.White, radius = radius, center = position, style = Stroke(width = 5f * p))
+    drawCircle(Color.Black.copy(alpha = 0.35f), radius = radius, center = position, style = Stroke(width = 1.5f * p))
 }

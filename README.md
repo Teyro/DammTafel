@@ -11,7 +11,7 @@ Winkelmesser, Zirkel u. a. mit drehbarer Führung und Längenanzeige)
 sowie ein Werkzeugkasten für Hintergrund, geteilte Ansicht,
 Bildschirmfoto und Lupe.
 
-## Funktionen (v0.3.1)
+## Funktionen (v0.5.0)
 
 - Freihand-Zeichnen mit Finger/Stift, mehrere Seiten mit eigener
   Undo/Redo-Historie
@@ -28,6 +28,10 @@ Bildschirmfoto und Lupe.
   werden im Einstellungsmenü hinterlegt.
 - Tafelbild als PNG in die Galerie speichern oder über die
   Systemfreigabe teilen
+- **Automatische Größenanpassung**: Knöpfe, Menüs, Radierer, Lineal
+  und Hilfslinien wachsen auf großen/hochauflösenden Boards
+  automatisch mit – zusätzlich einstellbar über die Symbolgröße
+  (Kompakt bis Sehr groß) im Einstellungsmenü
 
 ## Technik
 
@@ -44,6 +48,20 @@ Bildschirmfoto und Lupe.
   IServ-Passwort wird dabei unverschlüsselt gespeichert**, das ist
   für ein von der Schule verwaltetes Tablet vorgesehen, nicht für ein
   privates Gerät mit sensiblen Zugangsdaten Dritter
+
+## Hilfe bei Problemen
+
+- **Neue Version lässt sich nicht installieren („App nicht
+  installiert")** oder im Einstellungsmenü steht unter „Installiert"
+  weiterhin eine alte Versionsnummer: Auf dem Gerät ist noch eine
+  sehr alte Testversion mit anderer Signatur. Einmal DammBoard
+  deinstallieren und die aktuelle `DammBoard.apk` von der
+  [Release-Seite](https://github.com/Teyro/DammBoard/releases/latest)
+  neu installieren – danach funktionieren Updates wieder direkt aus
+  der App.
+- **Alles wirkt zu klein oder zu groß**: Im Einstellungsmenü unter
+  „Symbolgröße" anpassen. Die Zeile darunter zeigt, welche Auflösung
+  und Pixeldichte das Gerät meldet – hilfreich bei Rückfragen.
 
 ## Bauen
 

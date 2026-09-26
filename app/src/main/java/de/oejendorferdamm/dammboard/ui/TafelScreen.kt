@@ -57,7 +57,7 @@ import kotlinx.coroutines.launch
 fun TafelScreen(
     state: TafelState,
     animationsModus: AnimationsModus,
-    symbolSkalierung: Float,
+    bedienFaktor: Float,
     zeichenPraezision: Float,
     zeigeUpdatePunkt: Boolean,
     onSchliessenApp: () -> Unit,
@@ -107,66 +107,73 @@ fun TafelScreen(
             }
         }
 
-        TafelWerkzeugleiste(
-            state = state,
-            animationsModus = animationsModus,
-            symbolSkalierung = symbolSkalierung,
-            zeigeUpdatePunkt = zeigeUpdatePunkt,
-            onMenu = onOeffneEinstellungen,
-            onTeilen = { state.aufnahmeAnfrage = AufnahmeZweck.TEILEN },
-            onIServ = { state.aufnahmeAnfrage = AufnahmeZweck.ISERV },
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .navigationBarsPadding()
-                .padding(top = 4.dp)
-        )
+        // Alle Bedienelemente über der Tafel werden gemeinsam an die Bildschirmgröße und die
+        // gewählte Symbolgröße angepasst (siehe Skalierung.kt) – bis 0.4.6 galt die Symbolgröße
+        // nur für die untere Leiste, Seitenanzeige und Beenden-Knopf blieben immer klein. Die
+        // Zeichenfläche selbst liegt bewusst außerhalb: sie rechnet in echten Bildschirmpixeln.
+        SkalierteDichte(bedienFaktor) {
+            Box(modifier = Modifier.fillMaxSize()) {
+                TafelWerkzeugleiste(
+                    state = state,
+                    animationsModus = animationsModus,
+                    zeigeUpdatePunkt = zeigeUpdatePunkt,
+                    onMenu = onOeffneEinstellungen,
+                    onTeilen = { state.aufnahmeAnfrage = AufnahmeZweck.TEILEN },
+                    onIServ = { state.aufnahmeAnfrage = AufnahmeZweck.ISERV },
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .navigationBarsPadding()
+                        .padding(top = 4.dp)
+                )
 
-        // Immer sichtbar (unabhängig vom Werkzeugkasten-Panel) am rechten Bildschirmrand, wie im
-        // Original-Design: zeigt aktuelle/Gesamtzahl der Seiten und lässt sich zusätzlich durch
-        // vertikales Ziehen/Scrollen blättern.
-        SeitenNavigator(
-            aktuelleSeite = state.aktiveSeite,
-            seitenAnzahl = state.seiten.size,
-            aufVorherige = { state.vorherigeSeite() },
-            aufNaechste = { state.naechsteSeite() },
-            modifier = Modifier
-                .align(Alignment.CenterEnd)
-                .padding(end = 14.dp)
-        )
+                // Immer sichtbar (unabhängig vom Werkzeugkasten-Panel) am rechten Bildschirmrand, wie im
+                // Original-Design: zeigt aktuelle/Gesamtzahl der Seiten und lässt sich zusätzlich durch
+                // vertikales Ziehen/Scrollen blättern.
+                SeitenNavigator(
+                    aktuelleSeite = state.aktiveSeite,
+                    seitenAnzahl = state.seiten.size,
+                    aufVorherige = { state.vorherigeSeite() },
+                    aufNaechste = { state.naechsteSeite() },
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .padding(end = 14.dp)
+                )
 
-        // Bewusst abseits der Werkzeuggruppe, ganz unten links – damit man beim Arbeiten in der
-        // Mitte/rechts nicht versehentlich die App beendet.
-        Box(
-            modifier = Modifier
-                .align(Alignment.BottomStart)
-                .navigationBarsPadding()
-                .padding(start = 16.dp, bottom = 14.dp)
-                .size(40.dp)
-                .shadow(2.dp, CircleShape)
-                .clip(CircleShape)
-                .background(Color.White)
-                .clickable { zeigeBeendenDialog = true },
-            contentAlignment = Alignment.Center
-        ) {
-            AllgemeinSymbol(AllgemeinesSymbol.SCHLIESSEN, Modifier.size(16.dp), Color(0xFFE0402E))
-        }
-    }
-
-    if (zeigeBeendenDialog) {
-        AlertDialog(
-            onDismissRequest = { zeigeBeendenDialog = false },
-            title = { Text("DammBoard beenden?") },
-            text = { Text("Willst du das Programm wirklich beenden?") },
-            confirmButton = {
-                TextButton(onClick = {
-                    zeigeBeendenDialog = false
-                    onSchliessenApp()
-                }) { Text("Beenden") }
-            },
-            dismissButton = {
-                TextButton(onClick = { zeigeBeendenDialog = false }) { Text("Abbrechen") }
+                // Bewusst abseits der Werkzeuggruppe, ganz unten links – damit man beim Arbeiten in der
+                // Mitte/rechts nicht versehentlich die App beendet.
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .navigationBarsPadding()
+                        .padding(start = 16.dp, bottom = 18.dp)
+                        .size(40.dp)
+                        .shadow(2.dp, CircleShape)
+                        .clip(CircleShape)
+                        .background(Color.White)
+                        .clickable { zeigeBeendenDialog = true },
+                    contentAlignment = Alignment.Center
+                ) {
+                    AllgemeinSymbol(AllgemeinesSymbol.SCHLIESSEN, Modifier.size(16.dp), Color(0xFFE0402E))
+                }
             }
-        )
+
+            if (zeigeBeendenDialog) {
+                AlertDialog(
+                    onDismissRequest = { zeigeBeendenDialog = false },
+                    title = { Text("DammBoard beenden?") },
+                    text = { Text("Willst du das Programm wirklich beenden?") },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            zeigeBeendenDialog = false
+                            onSchliessenApp()
+                        }) { Text("Beenden") }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { zeigeBeendenDialog = false }) { Text("Abbrechen") }
+                    }
+                )
+            }
+        }
     }
 }
 
@@ -184,7 +191,6 @@ private fun SeitenNavigator(
     modifier: Modifier = Modifier
 ) {
     var zugSumme by remember { mutableFloatStateOf(0f) }
-    val schwelle = 56f
 
     Column(
         modifier = modifier
@@ -192,6 +198,9 @@ private fun SeitenNavigator(
             .clip(RoundedCornerShape(20.dp))
             .background(Color.White)
             .pointerInput(seitenAnzahl) {
+                // Zugweg pro Seite in dp (wächst mit dem Bedienfaktor) statt fester Pixel –
+                // sonst müsste man auf hochauflösenden Boards nur halb so weit ziehen.
+                val schwelle = 48.dp.toPx()
                 detectVerticalDragGestures(
                     onDragStart = { zugSumme = 0f },
                     onVerticalDrag = { change, dragAmount ->

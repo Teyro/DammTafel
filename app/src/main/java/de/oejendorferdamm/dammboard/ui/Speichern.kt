@@ -8,12 +8,16 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
 
-/** Schreibt das Tafelbild als PNG in die Galerie (Pictures/DammBoard) und gibt dessen Uri zurück. */
-fun speichereBildUndGibUriZurueck(context: Context, bitmap: Bitmap): Uri? {
-    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+/** Schreibt das Tafelbild als PNG in die Galerie (Pictures/DammBoard) und gibt dessen Uri zurück.
+ *  Läuft im Hintergrund: ein ganzes Tafelbild als PNG zu kodieren dauert auf alten Boards
+ *  (gerade bei 4K) mehrere Sekunden, in denen die Oberfläche sonst eingefroren wäre. */
+suspend fun speichereBildUndGibUriZurueck(context: Context, bitmap: Bitmap): Uri? = withContext(Dispatchers.IO) {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
         speichereUeberScopedStorage(context, bitmap)
     } else {
         speichereLegacy(context, bitmap)

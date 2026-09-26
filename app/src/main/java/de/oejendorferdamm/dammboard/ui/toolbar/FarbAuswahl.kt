@@ -153,17 +153,19 @@ private fun VerlaufsQuadrat(modifier: Modifier = Modifier, onFarbe: (Color) -> U
         )
         knopf?.let { pos ->
             Canvas(modifier = Modifier.fillMaxSize()) {
+                // In dp statt Pixeln: auf hochauflösenden Boards war der Markierungsring sonst
+                // kaum größer als ein Stecknadelkopf.
                 drawCircle(
                     color = Color.White,
-                    radius = 7f,
+                    radius = 5.dp.toPx(),
                     center = pos,
-                    style = Stroke(width = 2.4f)
+                    style = Stroke(width = 1.8.dp.toPx())
                 )
                 drawCircle(
                     color = Color.Black.copy(alpha = 0.4f),
-                    radius = 9f,
+                    radius = 6.5.dp.toPx(),
                     center = pos,
-                    style = Stroke(width = 1f)
+                    style = Stroke(width = 0.8.dp.toPx())
                 )
             }
         }

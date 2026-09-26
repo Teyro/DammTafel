@@ -46,6 +46,14 @@ def tippe_mitte_von(beschreibung: str) -> bool:
     return False
 
 
+def bildschirm_groesse():
+    """Aktuelle (ggf. per 'wm size' simulierte) Bildschirmgröße in Pixeln, quer ausgerichtet."""
+    ausgabe = adb("shell", "wm", "size").stdout
+    zeilen = [z for z in ausgabe.splitlines() if ":" in z]
+    breite, hoehe = (int(z) for z in zeilen[-1].split(":")[1].strip().split("x"))
+    return max(breite, hoehe), min(breite, hoehe)
+
+
 def sichere_logcat():
     with open("logcat.txt", "w") as datei:
         subprocess.run(["adb", "logcat", "-d"], stdout=datei)
@@ -79,6 +87,37 @@ def main():
             time.sleep(1)
             if datei:
                 screenshot(datei)
+    # Werkzeugkasten wieder schließen
+    tippe_mitte_von("Werkzeugkasten")
+    time.sleep(1)
+
+    # Zeichenfläche: Stift wählen, ein paar Striche ziehen, einen davon wegradieren.
+    breite, hoehe = bildschirm_groesse()
+    if tippe_mitte_von("Stift"):
+        time.sleep(0.5)
+        tippe_mitte_von("Stift")  # Panel wieder zu
+        time.sleep(0.5)
+        for i in range(3):
+            y = int(hoehe * (0.2 + 0.1 * i))
+            adb("shell", "input", "swipe", str(int(breite * 0.15)), str(y), str(int(breite * 0.6)), str(y + int(hoehe * 0.05)), "600")
+            time.sleep(0.3)
+        screenshot("07_striche.png")
+    if tippe_mitte_von("Radierer"):
+        time.sleep(0.5)
+        tippe_mitte_von("Radierer")
+        time.sleep(0.5)
+        x = int(breite * 0.35)
+        adb("shell", "input", "swipe", str(x), str(int(hoehe * 0.15)), str(x), str(int(hoehe * 0.28)), "500")
+        time.sleep(0.5)
+        screenshot("08_radiert.png")
+    if tippe_mitte_von("Rückgängig"):
+        time.sleep(0.5)
+        screenshot("09_rueckgaengig.png")
+
+    # Einstellungen (zeigt auch die gemeldete Auflösung/Dichte und den Bedienfaktor)
+    if tippe_mitte_von("Menü"):
+        time.sleep(1.5)
+        screenshot("10_einstellungen.png")
 
     if not laeuft_noch():
         print("FEHLER: App ist während der Bedienung abgestürzt", file=sys.stderr)

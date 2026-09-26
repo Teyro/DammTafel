@@ -53,17 +53,19 @@ sealed interface BoardItem {
     val id: Long
 }
 
+private fun grenzenVon(punkte: List<Offset>): Pair<Offset, Offset> {
+    var minX = Float.MAX_VALUE; var minY = Float.MAX_VALUE
+    var maxX = -Float.MAX_VALUE; var maxY = -Float.MAX_VALUE
+    punkte.forEach { p ->
+        minX = min(minX, p.x); minY = min(minY, p.y)
+        maxX = max(maxX, p.x); maxY = max(maxY, p.y)
+    }
+    return Offset(minX, minY) to Offset(maxX, maxY)
+}
+
 /** Achsenparalleles Begrenzungsrechteck (min, max) eines Elements. */
 fun BoardItem.begrenzendesRechteck(): Pair<Offset, Offset> = when (this) {
-    is StrichItem -> {
-        var minX = Float.MAX_VALUE; var minY = Float.MAX_VALUE
-        var maxX = -Float.MAX_VALUE; var maxY = -Float.MAX_VALUE
-        punkte.forEach { p ->
-            minX = min(minX, p.x); minY = min(minY, p.y)
-            maxX = max(maxX, p.x); maxY = max(maxY, p.y)
-        }
-        Offset(minX, minY) to Offset(maxX, maxY)
-    }
+    is StrichItem -> grenzen
     is FormItem -> Offset(min(start.x, ende.x), min(start.y, ende.y)) to
         Offset(max(start.x, ende.x), max(start.y, ende.y))
     is LaengenEtikett -> position to position
@@ -82,10 +84,19 @@ private fun abstandZuStrecke(p: Offset, a: Offset, b: Offset): Float {
 /** Prüft, ob ein Punkt (z. B. der Radierer) dieses Element berührt. */
 fun BoardItem.beruehrtVon(punkt: Offset, radius: Float): Boolean = when (this) {
     is StrichItem -> {
-        if (punkte.size < 2) {
-            punkte.firstOrNull()?.let { hypot(punkt.x - it.x, punkt.y - it.y) <= radius + breite / 2 } ?: false
+        // Erst das (zwischengespeicherte) Begrenzungsrechteck prüfen: Der Radierer fragt bei
+        // jeder Bewegung ALLE Striche ab – ohne diese Vorprüfung würde jeder Punkt jedes
+        // Strichs auf der Seite nachgerechnet, was auf vollen Tafeln spürbar ruckelt.
+        val reichweite = radius + breite / 2
+        val (min, max) = grenzen
+        if (punkt.x < min.x - reichweite || punkt.x > max.x + reichweite ||
+            punkt.y < min.y - reichweite || punkt.y > max.y + reichweite
+        ) {
+            false
+        } else if (punkte.size < 2) {
+            punkte.firstOrNull()?.let { hypot(punkt.x - it.x, punkt.y - it.y) <= reichweite } ?: false
         } else {
-            (0 until punkte.size - 1).any { i -> abstandZuStrecke(punkt, punkte[i], punkte[i + 1]) <= radius + breite / 2 }
+            (0 until punkte.size - 1).any { i -> abstandZuStrecke(punkt, punkte[i], punkte[i + 1]) <= reichweite }
         }
     }
     is FormItem -> {
@@ -102,7 +113,11 @@ data class StrichItem(
     val farbe: Color,
     val breite: Float,
     val gestrichelt: Boolean = false
-) : BoardItem
+) : BoardItem {
+    /** Einmal berechnet: Striche ändern sich nie (Verschieben erzeugt per copy() einen neuen).
+     *  Steht im Rumpf, damit es nicht zu equals/hashCode/copy zählt. */
+    internal val grenzen: Pair<Offset, Offset> by lazy(LazyThreadSafetyMode.NONE) { grenzenVon(punkte) }
+}
 
 data class FormItem(
     override val id: Long,
@@ -152,7 +167,7 @@ class Seite(hintergrundStart: HintergrundStil = HintergrundStil(TafelGruen)) {
     fun radiereBeruehrte(punkt: Offset, radius: Float) {
         val treffer = items.filter { it.beruehrtVon(punkt, radius) }
         if (treffer.isEmpty()) return
-        items.removeAll(treffer)
+        entferne(treffer)
         ausstehendRadiert.addAll(treffer)
         versionsZaehler++
     }
@@ -183,12 +198,13 @@ class Seite(hintergrundStart: HintergrundStil = HintergrundStil(TafelGruen)) {
 
     fun entfernenAusgewaehlteOderAlles() {
         val zielItems = if (ausgewaehlteIds.isNotEmpty()) {
-            items.filter { it.id in ausgewaehlteIds }
+            val ids = ausgewaehlteIds.toHashSet()
+            items.filter { it.id in ids }
         } else {
             items.toList()
         }
         if (zielItems.isEmpty()) return
-        items.removeAll(zielItems)
+        entferne(zielItems)
         ausgewaehlteIds.clear()
         rueckgaengigStapel.add(Entfernt(zielItems))
         wiederholenStapel.clear()
@@ -199,7 +215,7 @@ class Seite(hintergrundStart: HintergrundStil = HintergrundStil(TafelGruen)) {
         val aktion = rueckgaengigStapel.removeLastOrNull() ?: return
         when (aktion) {
             is Hinzugefuegt -> {
-                items.removeAll(aktion.hinzugefuegteItems)
+                entferne(aktion.hinzugefuegteItems)
                 wiederholenStapel.add(aktion)
             }
             is Entfernt -> {
@@ -222,7 +238,7 @@ class Seite(hintergrundStart: HintergrundStil = HintergrundStil(TafelGruen)) {
                 rueckgaengigStapel.add(aktion)
             }
             is Entfernt -> {
-                items.removeAll(aktion.entfernteItems)
+                entferne(aktion.entfernteItems)
                 rueckgaengigStapel.add(aktion)
             }
             is Verschoben -> {
@@ -233,7 +249,19 @@ class Seite(hintergrundStart: HintergrundStil = HintergrundStil(TafelGruen)) {
         versionsZaehler++
     }
 
-    private fun verschiebeItems(ids: List<Long>, delta: Offset) {
+    /** Entfernt [weg] in EINEM Durchgang über die IDs – removeAll(Liste) würde jedes Element
+     *  mit jedem vergleichen, was z. B. beim Wiederholen von "Alles löschen" quadratisch wird. */
+    private fun entferne(weg: List<BoardItem>) {
+        if (weg.isEmpty()) return
+        val ids = weg.mapTo(HashSet(weg.size * 2)) { it.id }
+        val rest = items.filterNot { it.id in ids }
+        if (rest.size == items.size) return
+        items.clear()
+        items.addAll(rest)
+    }
+
+    private fun verschiebeItems(idListe: List<Long>, delta: Offset) {
+        val ids = idListe.toHashSet()
         for (i in items.indices) {
             val item = items[i]
             if (item.id !in ids) continue

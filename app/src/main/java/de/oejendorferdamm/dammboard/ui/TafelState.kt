@@ -33,12 +33,13 @@ class GeometrieFuehrung {
     var winkelGrad by mutableFloatStateOf(0f)
 }
 
-/** Hält den kompletten Bearbeitungszustand der Tafel-App: Seiten, aktives Werkzeug, Panel-Sichtbarkeit.
- *  [hintergrundStart] ist der Hintergrund, mit dem neue Seiten beginnen – standardmäßig das
- *  bekannte Tafelgrün, kann aber (bei aktivierter Option „Letzten Hintergrund merken") der zuletzt
- *  verwendete Hintergrund sein. */
-class TafelState(private val hintergrundStart: HintergrundStil = HintergrundStil(TafelGruen)) {
+/** Hält den kompletten Bearbeitungszustand der Tafel-App: Seiten, aktives Werkzeug, Panel-Sichtbarkeit. */
+class TafelState(hintergrundStart: HintergrundStil = HintergrundStil(TafelGruen)) {
     val seiten: SnapshotStateList<Seite> = mutableStateListOf(Seite(hintergrundStart))
+
+    /** Hintergrund, mit dem neue Seiten beginnen – standardmäßig das bekannte Tafelgrün, bei
+     *  aktivierter Option „Letzten Hintergrund merken" der zuletzt verwendete (setzt AppWurzel). */
+    var neueSeitenHintergrund: HintergrundStil = hintergrundStart
     var aktiveSeite by mutableIntStateOf(0)
     val seite: Seite get() = seiten[aktiveSeite]
 
@@ -104,7 +105,7 @@ class TafelState(private val hintergrundStart: HintergrundStil = HintergrundStil
     }
 
     fun neueSeite() {
-        seiten.add(Seite(hintergrundStart))
+        seiten.add(Seite(neueSeitenHintergrund))
         aktiveSeite = seiten.lastIndex
     }
 

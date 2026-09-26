@@ -33,6 +33,7 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -73,6 +74,7 @@ fun EinstellungenScreen(
     aktuellerModus: AnimationsModus,
     aktuelleSymbolGroesse: SymbolGroesse,
     aktuelleVersion: String,
+    bildschirmInfo: String,
     updateInfo: UpdateInfo?,
     autoUpdatePruefung: Boolean,
     updatePruefungLaeuft: Boolean,
@@ -146,23 +148,22 @@ fun EinstellungenScreen(
             Spacer(Modifier.height(22.dp))
             Text("Symbolgröße", color = Textfarbe, fontSize = 15.sp, fontWeight = FontWeight.Bold)
             Text(
-                "Größe der Werkzeugleisten-Symbole – wirkt sich auch auf die Tippflächen aus.",
+                "Größe aller Knöpfe, Symbole und Menüs – inklusive der Tippflächen. Auf großen " +
+                    "Bildschirmen wird zusätzlich automatisch vergrößert.",
                 color = TextfarbeSchwach, fontSize = 11.sp, modifier = Modifier.padding(top = 2.dp, bottom = 10.dp)
             )
             Row(
                 modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(50)).background(Color.White),
                 horizontalArrangement = Arrangement.SpaceEvenly
             ) {
-                ModusKnopf("Kompakt", ausgewaehlt = aktuelleSymbolGroesse == SymbolGroesse.KOMPAKT, modifier = Modifier.weight(1f)) {
-                    onSymbolGroesseGeaendert(SymbolGroesse.KOMPAKT)
-                }
-                ModusKnopf("Standard", ausgewaehlt = aktuelleSymbolGroesse == SymbolGroesse.STANDARD, modifier = Modifier.weight(1f)) {
-                    onSymbolGroesseGeaendert(SymbolGroesse.STANDARD)
-                }
-                ModusKnopf("Groß", ausgewaehlt = aktuelleSymbolGroesse == SymbolGroesse.GROSS, modifier = Modifier.weight(1f)) {
-                    onSymbolGroesseGeaendert(SymbolGroesse.GROSS)
+                SymbolGroesse.entries.forEach { groesse ->
+                    ModusKnopf(groesse.bezeichnung, ausgewaehlt = aktuelleSymbolGroesse == groesse, modifier = Modifier.weight(1f)) {
+                        onSymbolGroesseGeaendert(groesse)
+                    }
                 }
             }
+            // Hilft bei der Fehlersuche aus der Ferne: zeigt, was das Gerät Android meldet.
+            Text(bildschirmInfo, color = TextfarbeSchwach, fontSize = 10.sp, modifier = Modifier.padding(top = 6.dp))
 
             Spacer(Modifier.height(22.dp))
             ErweiterteEinstellungen(
@@ -372,11 +373,14 @@ private fun ErweiterteEinstellungen(
             "links lassen.",
         color = TextfarbeSchwach, fontSize = 11.sp, modifier = Modifier.padding(top = 2.dp, bottom = 4.dp)
     )
+    // Erst beim Loslassen speichern, nicht bei jedem Zwischenschritt des Reglers.
+    var praezision by remember(zeichenPraezision) { mutableFloatStateOf(zeichenPraezision) }
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
         Text("Performance", color = TextfarbeSchwach, fontSize = 10.sp)
         Slider(
-            value = zeichenPraezision,
-            onValueChange = onZeichenPraezisionGeaendert,
+            value = praezision,
+            onValueChange = { praezision = it },
+            onValueChangeFinished = { onZeichenPraezisionGeaendert(praezision) },
             valueRange = 0f..1f,
             steps = 9,
             colors = SliderDefaults.colors(thumbColor = Akzent, activeTrackColor = Akzent),
@@ -390,8 +394,8 @@ private fun ErweiterteEinstellungen(
         Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
             Text("Letzten Hintergrund merken", color = Textfarbe, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
             Text(
-                "Aus: jede neue Seite startet auf dem bekannten grünen Tafelhintergrund. An: der " +
-                    "zuletzt gewählte Hintergrund wird beim nächsten Start wiederverwendet.",
+                "Aus: jede neue Seite startet auf dem bekannten grünen Tafelhintergrund. An: neue " +
+                    "Seiten – auch nach dem nächsten Start – übernehmen den zuletzt gewählten Hintergrund.",
                 color = TextfarbeSchwach, fontSize = 11.sp, modifier = Modifier.padding(top = 2.dp)
             )
         }
