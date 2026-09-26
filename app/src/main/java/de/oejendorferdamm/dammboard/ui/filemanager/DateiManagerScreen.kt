@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
@@ -111,7 +112,9 @@ fun DateiManagerScreen(zugang: IServZugang, bild: Bitmap?, onFertig: () -> Unit)
         if (zugang.istEingerichtet) ladeOrdner("") else fehler = "Bitte zuerst IServ-Zugang in den Einstellungen hinterlegen."
     }
 
-    Box(modifier = Modifier.fillMaxSize().background(Color(0xFF5E8C6A))) {
+    // systemBarsPadding: Die Karte bleibt zwischen Status- und Navigationsleiste, statt auf
+    // kleineren Bildschirmen darunter zu verschwinden (die App zeichnet randlos).
+    Box(modifier = Modifier.fillMaxSize().background(Color(0xFF5E8C6A)).systemBarsPadding()) {
         Column(
             modifier = Modifier
                 .align(Alignment.Center)
